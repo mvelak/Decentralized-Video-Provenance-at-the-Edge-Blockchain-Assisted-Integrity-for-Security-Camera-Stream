@@ -1,0 +1,460 @@
+[
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "name",
+				"type": "string"
+			},
+			{
+				"internalType": "string",
+				"name": "version",
+				"type": "string"
+			}
+		],
+		"stateMutability": "nonpayable",
+		"type": "constructor"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "reason",
+				"type": "string"
+			}
+		],
+		"name": "InvalidInput",
+		"type": "error"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "uint64",
+				"name": "expectedGreaterThan",
+				"type": "uint64"
+			},
+			{
+				"internalType": "uint64",
+				"name": "actual",
+				"type": "uint64"
+			}
+		],
+		"name": "InvalidSequence",
+		"type": "error"
+	},
+	{
+		"inputs": [],
+		"name": "InvalidSignature",
+		"type": "error"
+	},
+	{
+		"inputs": [],
+		"name": "NotOwner",
+		"type": "error"
+	},
+	{
+		"inputs": [],
+		"name": "NotRelayer",
+		"type": "error"
+	},
+	{
+		"inputs": [
+			{
+				"components": [
+					{
+						"internalType": "bytes32",
+						"name": "contentHash",
+						"type": "bytes32"
+					},
+					{
+						"internalType": "bytes32",
+						"name": "merkleRoot",
+						"type": "bytes32"
+					},
+					{
+						"internalType": "uint256",
+						"name": "originalTimestamp",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint64",
+						"name": "sequence",
+						"type": "uint64"
+					},
+					{
+						"internalType": "string",
+						"name": "cameraId",
+						"type": "string"
+					},
+					{
+						"internalType": "string",
+						"name": "cid",
+						"type": "string"
+					},
+					{
+						"internalType": "bytes",
+						"name": "signature",
+						"type": "bytes"
+					}
+				],
+				"internalType": "struct SecurityVideoRegistry.RegisterInput",
+				"name": "input",
+				"type": "tuple"
+			}
+		],
+		"name": "registerVideoSigned",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "relayer",
+				"type": "address"
+			},
+			{
+				"internalType": "bool",
+				"name": "status",
+				"type": "bool"
+			}
+		],
+		"name": "setRelayer",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "SignatureExpired",
+		"type": "error"
+	},
+	{
+		"inputs": [],
+		"name": "TimestampInFuture",
+		"type": "error"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "bool",
+				"name": "enabled",
+				"type": "bool"
+			}
+		],
+		"name": "toggleWhitelist",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "VideoAlreadyRegistered",
+		"type": "error"
+	},
+	{
+		"inputs": [],
+		"name": "VideoNotFound",
+		"type": "error"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": true,
+				"internalType": "address",
+				"name": "relayer",
+				"type": "address"
+			},
+			{
+				"indexed": false,
+				"internalType": "bool",
+				"name": "isAllowed",
+				"type": "bool"
+			}
+		],
+		"name": "RelayerStatusChanged",
+		"type": "event"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": true,
+				"internalType": "bytes32",
+				"name": "contentHash",
+				"type": "bytes32"
+			},
+			{
+				"indexed": false,
+				"internalType": "string",
+				"name": "cid",
+				"type": "string"
+			},
+			{
+				"indexed": true,
+				"internalType": "address",
+				"name": "uploader",
+				"type": "address"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint64",
+				"name": "sequence",
+				"type": "uint64"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint256",
+				"name": "originalTimestamp",
+				"type": "uint256"
+			},
+			{
+				"indexed": true,
+				"internalType": "string",
+				"name": "cameraId",
+				"type": "string"
+			}
+		],
+		"name": "VideoRegistered",
+		"type": "event"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": false,
+				"internalType": "bool",
+				"name": "enabled",
+				"type": "bool"
+			}
+		],
+		"name": "WhitelistToggled",
+		"type": "event"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "",
+				"type": "address"
+			}
+		],
+		"name": "allowedRelayers",
+		"outputs": [
+			{
+				"internalType": "bool",
+				"name": "",
+				"type": "bool"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "bytes32",
+				"name": "contentHash",
+				"type": "bytes32"
+			}
+		],
+		"name": "getVideo",
+		"outputs": [
+			{
+				"components": [
+					{
+						"internalType": "address",
+						"name": "uploader",
+						"type": "address"
+					},
+					{
+						"internalType": "uint64",
+						"name": "sequence",
+						"type": "uint64"
+					},
+					{
+						"internalType": "address",
+						"name": "relayer",
+						"type": "address"
+					},
+					{
+						"internalType": "uint48",
+						"name": "createdAt",
+						"type": "uint48"
+					},
+					{
+						"internalType": "uint48",
+						"name": "originalTimestamp",
+						"type": "uint48"
+					},
+					{
+						"internalType": "bytes32",
+						"name": "contentHash",
+						"type": "bytes32"
+					},
+					{
+						"internalType": "bytes32",
+						"name": "merkleRoot",
+						"type": "bytes32"
+					},
+					{
+						"internalType": "string",
+						"name": "cid",
+						"type": "string"
+					},
+					{
+						"internalType": "string",
+						"name": "cameraId",
+						"type": "string"
+					}
+				],
+				"internalType": "struct SecurityVideoRegistry.Video",
+				"name": "",
+				"type": "tuple"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "uploader",
+				"type": "address"
+			},
+			{
+				"internalType": "uint256",
+				"name": "offset",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "limit",
+				"type": "uint256"
+			}
+		],
+		"name": "getVideosByUploader",
+		"outputs": [
+			{
+				"components": [
+					{
+						"internalType": "address",
+						"name": "uploader",
+						"type": "address"
+					},
+					{
+						"internalType": "uint64",
+						"name": "sequence",
+						"type": "uint64"
+					},
+					{
+						"internalType": "address",
+						"name": "relayer",
+						"type": "address"
+					},
+					{
+						"internalType": "uint48",
+						"name": "createdAt",
+						"type": "uint48"
+					},
+					{
+						"internalType": "uint48",
+						"name": "originalTimestamp",
+						"type": "uint48"
+					},
+					{
+						"internalType": "bytes32",
+						"name": "contentHash",
+						"type": "bytes32"
+					},
+					{
+						"internalType": "bytes32",
+						"name": "merkleRoot",
+						"type": "bytes32"
+					},
+					{
+						"internalType": "string",
+						"name": "cid",
+						"type": "string"
+					},
+					{
+						"internalType": "string",
+						"name": "cameraId",
+						"type": "string"
+					}
+				],
+				"internalType": "struct SecurityVideoRegistry.Video[]",
+				"name": "page",
+				"type": "tuple[]"
+			},
+			{
+				"internalType": "uint256",
+				"name": "total",
+				"type": "uint256"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "",
+				"type": "address"
+			}
+		],
+		"name": "lastSequence",
+		"outputs": [
+			{
+				"internalType": "uint64",
+				"name": "",
+				"type": "uint64"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "owner",
+		"outputs": [
+			{
+				"internalType": "address",
+				"name": "",
+				"type": "address"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "VIDEO_TYPEHASH",
+		"outputs": [
+			{
+				"internalType": "bytes32",
+				"name": "",
+				"type": "bytes32"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "whitelistEnabled",
+		"outputs": [
+			{
+				"internalType": "bool",
+				"name": "",
+				"type": "bool"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	}
+]
