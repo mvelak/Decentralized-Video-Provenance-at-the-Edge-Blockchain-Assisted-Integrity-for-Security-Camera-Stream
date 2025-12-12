@@ -1,0 +1,530 @@
+================================================================================
+VERITAS VIDEO REGISTRY SYSTEM
+Architecture & Flow Documentation
+================================================================================
+
+TABLE OF CONTENTS
+1. Executive Summary
+2. Current Demo Application Architecture
+3. Pattern B: Zero-Trust Camera + Relayer Architecture
+4. Technical Flow Details
+5. Security Model
+6. Scalability & Cost Analysis
+7. Future Enhancements
+
+================================================================================
+1. EXECUTIVE SUMMARY
+================================================================================
+
+Veritas is a blockchain-based immutable video registry system that provides
+cryptographic proof of video authenticity, timestamp integrity, and chain of
+custody for security footage.
+
+Key Features:
+- Immutable video registration on BSC (Binance Smart Chain)
+- EIP-712 cryptographic signatures for authenticity
+- IPFS decentralized storage
+- Per-camera cryptographic identity
+- Meta-transaction pattern (relayer support)
+
+Current Status: Working demo on BSC Testnet (ChainId 97)
+
+================================================================================
+2. CURRENT DEMO APPLICATION ARCHITECTURE
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           USER'S BROWSER                                 │
+│  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓  │
+│  ┃  Next.js React Application (page.tsx)                            ┃  │
+│  ┃                                                                   ┃  │
+│  ┃  ┌─────────────────┐  ┌──────────────────┐  ┌────────────────┐ ┃  │
+│  ┃  │ Camera Capture  │  │ EIP-712 Signing  │  │ Wallet Connect │ ┃  │
+│  ┃  │ (MediaRecorder) │  │ (ethers.js)      │  │ (MetaMask)     │ ┃  │
+│  ┃  └─────────────────┘  └──────────────────┘  └────────────────┘ ┃  │
+│  ┃           │                    │                      │          ┃  │
+│  ┃           └────────────────────┴──────────────────────┘          ┃  │
+│  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛  │
+└────────────────────────────────────┼────────────────────────────────────┘
+                                     │
+                    ┌────────────────┼────────────────┐
+                    │                │                │
+                    ▼                ▼                ▼
+         ┌──────────────────┐  ┌─────────┐  ┌──────────────────┐
+         │  Next.js API      │  │   BSC   │  │  IPFS Network    │
+         │  /api/ipfs        │  │ Testnet │  │  (via Pinata)    │
+         │  (Server-side)    │  │         │  │                  │
+         └──────────────────┘  └─────────┘  └──────────────────┘
+                │                    │                │
+                │                    │                │
+                └────────────────────┴────────────────┘
+                                     │
+                                     ▼
+                        ┌─────────────────────────┐
+                        │  Veritas Smart Contract │
+                        │  0xEFf592C7...          │
+                        │  (Solidity)             │
+                        └─────────────────────────┘
+
+COMPONENT DETAILS:
+
+A. Frontend (Next.js + React)
+   Location: /nextapp/app/page.tsx (1,100+ lines)
+   
+   Functions:
+   - Video capture from webcam (MediaRecorder API)
+   - Segment videos every 30 seconds
+   - Hash video content (SHA-256 → bytes32)
+   - EIP-712 signature generation
+   - Transaction submission via MetaMask
+   - Video listing and playback
+
+B. Smart Contract (Solidity)
+   Location: /packages/contracts/contract.sol
+   Network: BSC Testnet (ChainId 97)
+   Address: 0xEFf592C7d17D0D1b8f481A80CF457c0D8Fb34Fc3
+   
+   Key Functions:
+   - registerVideoSigned(): Register video with EIP-712 signature
+   - getVideo(hash): Retrieve video by content hash
+   - getVideosByUploader(address): List all videos from uploader
+   - lastSequence(address): Get sequence number per uploader
+
+C. IPFS Storage
+   - Videos uploaded to IPFS via Pinata API
+   - Returns CID (Content Identifier)
+   - Decentralized, immutable storage
+   - Videos accessible globally
+
+D. Database/State
+   - On-chain: Video metadata indexed by uploader address
+   - Off-chain: Video files on IPFS
+   - Client: Local state management (React hooks)
+
+================================================================================
+3. PATTERN B: ZERO-TRUST CAMERA + RELAYER ARCHITECTURE
+================================================================================
+
+Overview:
+Each camera has its own wallet and signs videos locally. A relayer service
+submits transactions to the blockchain, paying gas fees. The smart contract
+verifies the camera's signature and attributes videos to the camera's wallet.
+
+Benefits:
+✓ Cryptographic isolation per camera
+✓ Compromised camera doesn't affect others
+✓ One relayer wallet pays gas for all cameras
+✓ Camera identity = wallet address (non-repudiable)
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        CAMERA DEVICE (Edge)                              │
+│  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓  │
+│  ┃  Camera Software (Embedded Linux / IoT OS)                       ┃  │
+│  ┃                                                                   ┃  │
+│  ┃  ┌──────────────────────────────────────────────────────────┐   ┃  │
+│  ┃  │  Secure Enclave / TPM (Hardware Security Module)         │   ┃  │
+│  ┃  │  ┌────────────────────────────────────────────────────┐  │   ┃  │
+│  ┃  │  │  Private Key (never leaves device)                 │  │   ┃  │
+│  ┃  │  │  Camera Wallet: 0xCamera001...                     │  │   ┃  │
+│  ┃  │  └────────────────────────────────────────────────────┘  │   ┃  │
+│  ┃  └──────────────────────────────────────────────────────────┘   ┃  │
+│  ┃                          │                                        ┃  │
+│  ┃                          ▼                                        ┃  │
+│  ┃  ┌──────────────────────────────────────────────────────────┐   ┃  │
+│  ┃  │  Video Processing Pipeline                                │   ┃  │
+│  ┃  │  1. Capture video segment (e.g., 30 seconds)             │   ┃  │
+│  ┃  │  2. Compute SHA-256 hash → contentHash                   │   ┃  │
+│  ┃  │  3. Compute merkleRoot (hash of hash)                    │   ┃  │
+│  ┃  │  4. Sign EIP-712 message with camera's private key       │   ┃  │
+│  ┃  │  5. Upload video to IPFS → get CID                       │   ┃  │
+│  ┃  └──────────────────────────────────────────────────────────┘   ┃  │
+│  ┃                          │                                        ┃  │
+│  ┃                          ▼                                        ┃  │
+│  ┃  ┌──────────────────────────────────────────────────────────┐   ┃  │
+│  ┃  │  Signed Payload (sent to relayer)                        │   ┃  │
+│  ┃  │  {                                                        │   ┃  │
+│  ┃  │    contentHash: "0x4df2fc45...",                         │   ┃  │
+│  ┃  │    merkleRoot: "0x...",                                  │   ┃  │
+│  ┃  │    originalTimestamp: 1702345678,                        │   ┃  │
+│  ┃  │    sequence: 142,                                        │   ┃  │
+│  ┃  │    cameraId: "warehouse-a-dock-1",                       │   ┃  │
+│  ┃  │    cid: "QmVYs7HzDGQ6nvj9bk...",                         │   ┃  │
+│  ┃  │    signature: "0x1234abcd..." ← Signed by camera        │   ┃  │
+│  ┃  │  }                                                        │   ┃  │
+│  ┃  └──────────────────────────────────────────────────────────┘   ┃  │
+│  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛  │
+└────────────────────────────────────┼────────────────────────────────────┘
+                                     │
+                                     │ HTTPS POST
+                                     │ (signed payload)
+                                     ▼
+         ┌────────────────────────────────────────────────────┐
+         │         RELAYER SERVICE (Backend)                  │
+         │  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓  │
+         │  ┃  Node.js / Python Backend                  ┃  │
+         │  ┃                                             ┃  │
+         │  ┃  1. Receive signed payload from camera     ┃  │
+         │  ┃  2. Validate signature (optional)          ┃  │
+         │  ┃  3. Check camera is authorized             ┃  │
+         │  ┃  4. Submit to blockchain (pay gas)         ┃  │
+         │  ┃                                             ┃  │
+         │  ┃  Relayer Wallet: 0xRelayer123...           ┃  │
+         │  ┃  (funded with BNB for gas)                 ┃  │
+         │  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛  │
+         └────────────────────┬───────────────────────────────┘
+                              │
+                              │ contract.registerVideoSigned()
+                              ▼
+         ┌────────────────────────────────────────────────────┐
+         │         BSC BLOCKCHAIN (ChainId 97)                │
+         │  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓  │
+         │  ┃  Veritas Smart Contract                    ┃  │
+         │  ┃  0xEFf592C7d17D0D1b8f481A80CF457c0D8Fb34Fc3┃  │
+         │  ┃                                             ┃  │
+         │  ┃  1. Verify EIP-712 signature               ┃  │
+         │  ┃  2. Recover signer address (camera wallet) ┃  │
+         │  ┃  3. Verify sequence number                 ┃  │
+         │  ┃  4. Store video metadata:                  ┃  │
+         │  ┃     uploader: 0xCamera001... ← from sig    ┃  │
+         │  ┃     relayer: 0xRelayer123... ← msg.sender  ┃  │
+         │  ┃     sequence: 142                          ┃  │
+         │  ┃     contentHash: 0x4df2fc45...             ┃  │
+         │  ┃     cid: QmVYs7HzDGQ6nvj9bk...             ┃  │
+         │  ┃     cameraId: "warehouse-a-dock-1"         ┃  │
+         │  ┃  5. Emit VideoRegistered event             ┃  │
+         │  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛  │
+         └────────────────────────────────────────────────────┘
+
+================================================================================
+4. TECHNICAL FLOW DETAILS (PATTERN B)
+================================================================================
+
+STEP 1: Camera Initialization (One-time setup)
+──────────────────────────────────────────────
+Action: Generate camera wallet
+Location: Camera device (secure enclave)
+Output: 
+  - Private key (stored in TPM)
+  - Public key / wallet address: 0xCamera001...
+  - Register in management database
+
+STEP 2: Video Capture
+──────────────────────
+Action: Camera records video segment
+Location: Camera device
+Duration: 30 seconds (configurable)
+Output: Video blob (e.g., 2MB WebM file)
+
+STEP 3: Content Hashing
+────────────────────────
+Action: Compute SHA-256 hash of video
+Location: Camera device
+Input: Video blob
+Output: contentHash (bytes32)
+Example: 0x4df2fc4529e8e435a6f8e9df8c5b1e234a567890abcdef1234567890abcdef12
+
+Formula:
+  contentHash = SHA256(videoBlob)
+  merkleRoot = keccak256(contentHash)
+
+STEP 4: IPFS Upload
+───────────────────
+Action: Upload video to IPFS
+Location: Camera device (or relayer service)
+Input: Video blob
+Output: CID (Content Identifier)
+Example: QmVYs7HzDGQ6nvj9bkSDCWUZqSZqaBgAyPx3TMa32nTBz3
+
+Storage: Decentralized, immutable
+
+STEP 5: EIP-712 Signature Generation
+─────────────────────────────────────
+Action: Sign structured data with camera's private key
+Location: Camera device (secure enclave)
+
+Domain:
+  name: "Veritas"
+  version: "1"
+  chainId: 97
+  verifyingContract: 0xEFf592C7d17D0D1b8f481A80CF457c0D8Fb34Fc3
+
+Types:
+  Video {
+    bytes32 contentHash
+    bytes32 merkleRoot
+    uint256 originalTimestamp
+    uint64 sequence
+    string cameraId
+    string cid
+  }
+
+Value:
+  contentHash: 0x4df2fc45...
+  merkleRoot: 0x...
+  originalTimestamp: 1702345678 (Unix timestamp)
+  sequence: 142 (increments per camera)
+  cameraId: "warehouse-a-dock-1"
+  cid: "QmVYs7HzDGQ6nvj9bk..."
+
+Output: signature (bytes)
+Example: 0x1234abcd5678ef90...1234567890abcdef (65 bytes)
+
+STEP 6: Payload Transmission
+─────────────────────────────
+Action: Send signed payload to relayer
+Location: Camera → Relayer (HTTPS)
+
+Payload:
+  POST https://relayer.example.com/api/register
+  {
+    contentHash: "0x4df2fc45...",
+    merkleRoot: "0x...",
+    originalTimestamp: 1702345678,
+    sequence: 142,
+    cameraId: "warehouse-a-dock-1",
+    cid: "QmVYs7HzDGQ6nvj9bk...",
+    signature: "0x1234abcd..." ← Camera's signature
+  }
+
+STEP 7: Relayer Processing
+───────────────────────────
+Action: Relayer validates and submits to blockchain
+Location: Relayer service
+
+Validation (optional):
+  - Verify camera is authorized
+  - Verify signature recovers to known camera address
+  - Check sequence progression
+  - Rate limiting
+
+Transaction Submission:
+  Function: contract.registerVideoSigned(payload)
+  Gas: Paid by relayer wallet (0xRelayer123...)
+  Network: BSC Testnet
+
+STEP 8: Smart Contract Verification
+────────────────────────────────────
+Action: Contract verifies signature and stores video
+Location: Blockchain (BSC)
+
+Process:
+  1. Check if video already registered (contentHash)
+  2. Verify timestamp is not in future
+  3. Verify timestamp is within 7 days
+  4. Recover signer from EIP-712 signature
+     → ecrecover(digest, signature) = 0xCamera001...
+  5. Verify sequence > lastSequence[camera]
+  6. Store video metadata:
+     videos[contentHash] = {
+       uploader: 0xCamera001...,  ← From signature
+       relayer: 0xRelayer123...,   ← msg.sender
+       sequence: 142,
+       createdAt: block.timestamp,
+       originalTimestamp: 1702345678,
+       contentHash: 0x4df2fc45...,
+       merkleRoot: 0x...,
+       cid: "QmVYs7HzDGQ6nvj9bk...",
+       cameraId: "warehouse-a-dock-1"
+     }
+  7. Update lastSequence[camera] = 142
+  8. Append to userVideoHistory[camera]
+  9. Emit VideoRegistered event
+
+STEP 9: Event Emission & Confirmation
+──────────────────────────────────────
+Action: Transaction confirmed and event emitted
+Location: Blockchain
+
+Event:
+  VideoRegistered(
+    contentHash: 0x4df2fc45...,
+    cid: "QmVYs7HzDGQ6nvj9bk...",
+    uploader: 0xCamera001...,
+    sequence: 142,
+    originalTimestamp: 1702345678,
+    cameraId: "warehouse-a-dock-1"
+  )
+
+Confirmation: Transaction included in block (~3 seconds on BSC)
+
+STEP 10: Query & Verification
+──────────────────────────────
+Action: Retrieve videos for specific camera
+Location: Frontend / API
+
+Query by camera:
+  contract.getVideosByUploader(0xCamera001..., 0, 100)
+  Returns: Array of Video structs for this camera
+
+Query by hash:
+  contract.getVideo(0x4df2fc45...)
+  Returns: Single Video struct
+
+Verification:
+  - Download video from IPFS using CID
+  - Compute SHA-256 hash
+  - Compare with contentHash on-chain
+  - If match → video is authentic and unmodified
+
+================================================================================
+5. SECURITY MODEL
+================================================================================
+
+THREAT MODEL & MITIGATIONS:
+
+Threat 1: Compromised Camera
+────────────────────────────
+Risk: Attacker gains access to camera and private key
+Impact: Can register fake videos from that camera only
+Mitigation:
+  ✓ Other cameras unaffected (isolated keys)
+  ✓ Sequence number prevents replay attacks
+  ✓ Timestamp window limits backdating
+  ✓ Revoke camera wallet immediately
+  ✓ Historical videos remain valid (immutable)
+
+Threat 2: Man-in-the-Middle Attack
+───────────────────────────────────
+Risk: Attacker intercepts payload between camera and relayer
+Impact: Can see video metadata, cannot modify
+Mitigation:
+  ✓ Signature prevents payload tampering
+  ✓ Use HTTPS/TLS for camera → relayer
+  ✓ Even if relayer is malicious, cannot forge camera signature
+
+Threat 3: Replay Attack
+───────────────────────
+Risk: Attacker captures valid payload and resubmits
+Impact: None
+Mitigation:
+  ✓ Sequence number increments per video
+  ✓ Contract rejects sequence ≤ lastSequence
+  ✓ Cannot replay old valid signatures
+
+Threat 4: Backdating Attack
+───────────────────────────
+Risk: Attacker tries to register video with fake old timestamp
+Impact: Limited
+Mitigation:
+  ✓ Contract enforces timestamp within 7 days of block.timestamp
+  ✓ Contract rejects timestamps in future (>5 min tolerance)
+
+Threat 5: Relayer Compromise
+────────────────────────────
+Risk: Relayer service compromised or malicious
+Impact: Cannot forge videos (no camera keys)
+Mitigation:
+  ✓ Relayer only pays gas, doesn't sign videos
+  ✓ Contract verifies camera signature
+  ✓ Worst case: Relayer refuses to submit (DoS)
+  ✓ Solution: Switch to backup relayer or direct submission
+
+Threat 6: Video Substitution
+────────────────────────────
+Risk: Attacker replaces video on IPFS
+Impact: None
+Mitigation:
+  ✓ contentHash stored on-chain
+  ✓ IPFS CID is content-addressed (can't change without changing CID)
+  ✓ On-chain hash acts as commitment
+  ✓ Verification: recompute hash and compare
+
+CRYPTOGRAPHIC GUARANTEES:
+
+1. Authenticity
+   - Video signed by specific camera wallet
+   - EIP-712 signature proves origin
+   - Non-repudiable
+
+2. Integrity
+   - contentHash immutable on blockchain
+   - Any modification to video changes hash
+   - Tamper-evident
+
+3. Timestamp Integrity
+   - originalTimestamp signed in EIP-712 message
+   - createdAt = block.timestamp (blockchain time)
+   - Cannot backdate beyond 7 days
+
+4. Sequence Integrity
+   - Monotonically increasing per camera
+   - Prevents replay and reordering
+   - Gaps visible (indicates missing videos)
+
+5. Non-Repudiation
+   - Camera cannot deny signing video
+   - Signature cryptographically binds camera to video
+   - Legal evidence
+
+================================================================================
+6. SCALABILITY & COST ANALYSIS
+================================================================================
+
+SCENARIO: 100 Cameras, 24/7 Operation
+
+Assumptions:
+- 100 cameras
+- 1 video segment every 30 seconds per camera
+- 2,880 videos per day per camera
+- 288,000 total videos per day
+- BSC Testnet (ChainId 97)
+- Gas price: 3 gwei
+- BNB price: $600
+
+PATTERN B COSTS:
+
+Setup (One-time):
+  - Generate 100 camera wallets: FREE (offline)
+  - Register in database: $0
+  - Fund relayer wallet: 1 BNB = $600
+
+Ongoing (Per Month):
+  - Transactions: 288,000 videos/day × 30 days = 8,640,000 tx/month
+  - Gas per tx: ~50,000 gas
+  - Gas cost per tx: 50,000 × 3 gwei = 0.00015 BNB = $0.09
+  - Monthly gas: 8,640,000 × $0.09 = $777,600
+
+  WAIT - this is BSC Testnet (free gas)
+  On BSC Mainnet:
+  - Gas per tx: ~50,000 gas
+  - Gas price: 3 gwei
+  - BNB: $600
+  - Cost per tx: 50,000 × 3 × 10^-9 × 600 = $0.00009
+  - Monthly: 8,640,000 × $0.00009 = $777.60
+
+IPFS Storage:
+  - Average video size: 2MB per segment
+  - Daily storage: 288,000 × 2MB = 576 GB/day
+  - Monthly: 576 × 30 = 17.28 TB/month
+  - Pinata pricing: ~$20/TB = $345.60/month
+
+TOTAL MONTHLY COST (Pattern B):
+  Blockchain (BSC Mainnet): $777.60
+  IPFS Storage (Pinata): $345.60
+  ─────────────────────────────────
+  Total: $1,123.20/month for 100 cameras
+
+Per camera per month: $11.23
+
+ALTERNATIVE: Direct Submission (No Relayer)
+  - Must fund all 100 camera wallets
+  - 1 BNB per camera = 100 BNB = $60,000 upfront
+  - Same gas costs (cameras pay individually)
+  - Higher operational complexity
+
+OPTIMIZATION OPTIONS:
+
+1. Segment Length
+   - 30s → 60s segments = 50% cost reduction
+   - 30s → 300s segments = 90% cost reduction
+   - Trade-off: Granularity vs cost
+
+2. Video Quality
+   - Lower bitrate = smaller files
+   - Potato (180kbps) vs High (2.5Mbps) = 93% size reduction
+   - IPFS storage savings
+
+3. Batch Transactions (Future Enhancement)
+   - Register multiple videos in one transaction
+   - Amortize gas costs
+   - Requires contract modification

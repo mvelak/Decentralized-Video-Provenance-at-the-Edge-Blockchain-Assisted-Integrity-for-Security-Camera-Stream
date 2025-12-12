@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-/// @title 497 Final
+/// @title Veritas Smart Contract
 /// @author Marco Vela-Koentarjo
-/// @notice A strictly immutable registry for security footage. 
-contract SecurityVideoRegistry {
+/// @notice A permissionless, immutable registry for security footage.
+contract Veritas {
     // -------------------------------------------------------------------------
     // Custom Errors
     // -------------------------------------------------------------------------
-    error NotOwner();
-    error NotRelayer();
     error VideoAlreadyRegistered();
     error VideoNotFound();
     error TimestampInFuture();
@@ -26,97 +24,70 @@ contract SecurityVideoRegistry {
         string cid,
         address indexed uploader,
         uint64 sequence,
-        uint256 originalTimestamp,
-        string indexed cameraId
+        uint256 originalTimestamp
     );
-
-    event RelayerStatusChanged(address indexed relayer, bool isAllowed);
-    event WhitelistToggled(bool enabled);
 
     // -------------------------------------------------------------------------
     // State Variables & Structs
     // -------------------------------------------------------------------------
-    
+
     struct RegisterInput {
         bytes32 contentHash;
         bytes32 merkleRoot;
         uint256 originalTimestamp;
         uint64 sequence;
-        string cameraId;
         string cid;
         bytes signature;
     }
 
     struct Video {
         address uploader;        // Slot 0
-        uint64 sequence;         
+        uint64 sequence;
         
-        address relayer;         // Slot 1
-        uint48 createdAt;        
+        address relayer;         // Slot 1 (The address that paid the gas)
+        uint48 createdAt;
         uint48 originalTimestamp;
-        
+
         bytes32 contentHash;     // Slot 2
         bytes32 merkleRoot;      // Slot 3
-        
-        string cid;              // Slot 4 (Dynamic)
-        string cameraId;         // Slot 5 (Dynamic)
+
+        string cid;              // Slot 4
     }
 
     // Storage
     mapping(bytes32 => Video) private videos;
     mapping(address => bytes32[]) private userVideoHistory;
     mapping(address => uint64) public lastSequence;
-    
-    // Auth & Permissions
-    address public owner;
-    bool public whitelistEnabled;
-    mapping(address => bool) public allowedRelayers;
 
     // EIP-712 Constants
     bytes32 private immutable _CACHED_DOMAIN_SEPARATOR;
     uint256 private immutable _CACHED_CHAIN_ID;
     bytes32 private immutable _HASHED_NAME;
     bytes32 private immutable _HASHED_VERSION;
-    
+
     bytes32 public constant VIDEO_TYPEHASH = keccak256(
-        "Video(bytes32 contentHash,bytes32 merkleRoot,uint256 originalTimestamp,uint64 sequence,string cameraId,string cid)"
+        "Video(bytes32 contentHash,bytes32 merkleRoot,uint256 originalTimestamp,uint64 sequence,string cid)"
     );
 
     // -------------------------------------------------------------------------
-    // Constructor & Modifiers
+    // Constructor
     // -------------------------------------------------------------------------
-    constructor(string memory name, string memory version) {
-        owner = msg.sender;
-        whitelistEnabled = false;
-
-        _HASHED_NAME = keccak256(bytes(name));
-        _HASHED_VERSION = keccak256(bytes(version));
+    constructor() {
+        _HASHED_NAME = keccak256("Veritas");
+        _HASHED_VERSION = keccak256("1");
         _CACHED_CHAIN_ID = block.chainid;
         _CACHED_DOMAIN_SEPARATOR = _buildDomainSeparator();
-    }
-
-    modifier onlyRelayer() {
-        if (whitelistEnabled) {
-            if (!allowedRelayers[msg.sender]) revert NotRelayer();
-        }
-        _;
-    }
-
-    modifier onlyOwner() {
-        if (msg.sender != owner) revert NotOwner();
-        _;
     }
 
     // -------------------------------------------------------------------------
     // Core Logic
     // -------------------------------------------------------------------------
-    
-    /// @notice Registers a video. 
-    function registerVideoSigned(RegisterInput calldata input) external onlyRelayer {
+
+    /// @notice Registers a video. Anyone can call this if they have a valid signature.
+    function registerVideoSigned(RegisterInput calldata input) external {
         // 1. Validation
-        if (bytes(input.cameraId).length == 0 || bytes(input.cameraId).length > 32) revert InvalidInput("Bad cameraId length");
         if (bytes(input.cid).length == 0 || bytes(input.cid).length > 64) revert InvalidInput("Bad CID length");
-        
+
         if (videos[input.contentHash].uploader != address(0)) revert VideoAlreadyRegistered();
         if (input.originalTimestamp > block.timestamp + 300) revert TimestampInFuture();
         if (input.originalTimestamp < block.timestamp - 7 days) revert SignatureExpired();
@@ -132,14 +103,13 @@ contract SecurityVideoRegistry {
                     input.merkleRoot,
                     input.originalTimestamp,
                     input.sequence,
-                    keccak256(bytes(input.cameraId)),
                     keccak256(bytes(input.cid))
                 )
             );
 
             bytes32 domainSeparator = _domainSeparatorV4();
             bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
-            
+
             signer = _recoverSigner(digest, input.signature);
         }
 
@@ -150,16 +120,16 @@ contract SecurityVideoRegistry {
         lastSequence[signer] = input.sequence;
 
         // 4. Store Video
+        // Note: msg.sender is the "Relayer" (the account paying gas)
         videos[input.contentHash].uploader = signer;
         videos[input.contentHash].sequence = input.sequence;
-        videos[input.contentHash].relayer = msg.sender;
+        videos[input.contentHash].relayer = msg.sender; 
         videos[input.contentHash].createdAt = uint48(block.timestamp);
         videos[input.contentHash].originalTimestamp = uint48(input.originalTimestamp);
         videos[input.contentHash].contentHash = input.contentHash;
         videos[input.contentHash].merkleRoot = input.merkleRoot;
         videos[input.contentHash].cid = input.cid;
-        videos[input.contentHash].cameraId = input.cameraId;
-
+        
         userVideoHistory[signer].push(input.contentHash);
 
         emit VideoRegistered(
@@ -167,8 +137,7 @@ contract SecurityVideoRegistry {
             input.cid, 
             signer, 
             input.sequence, 
-            input.originalTimestamp, 
-            input.cameraId
+            input.originalTimestamp
         );
     }
 
@@ -208,19 +177,6 @@ contract SecurityVideoRegistry {
         }
 
         return (page, total);
-    }
-
-    // -------------------------------------------------------------------------
-    // Admin
-    // -------------------------------------------------------------------------
-    function setRelayer(address relayer, bool status) external onlyOwner {
-        allowedRelayers[relayer] = status;
-        emit RelayerStatusChanged(relayer, status);
-    }
-
-    function toggleWhitelist(bool enabled) external onlyOwner {
-        whitelistEnabled = enabled;
-        emit WhitelistToggled(enabled);
     }
 
     // -------------------------------------------------------------------------

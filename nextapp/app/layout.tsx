@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "497 Project // Provenance",
+  title: "Veritas",
   description: "Record a video, hash it, pin to IPFS, and register provenance on-chain.",
 };
 
