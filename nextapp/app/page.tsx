@@ -89,11 +89,21 @@ export default function Page() {
 
   const [listAddress, setListAddress] = useState<string>('');
   const [listOffset, setListOffset] = useState<number>(0);
-  const [listLimit] = useState<number>(10); // Hardcoded to 10
+  const [listLimit] = useState<number>(5); // Max 5 videos per page
   const [listTotal, setListTotal] = useState<number>(0);
   const [listResults, setListResults] = useState<ContractVideo[]>([]);
   const [listError, setListError] = useState<string>('');
   const [listLoading, setListLoading] = useState<boolean>(false);
+
+  // Verification state
+  const [verifyFile, setVerifyFile] = useState<File | null>(null);
+  const [verifyLoading, setVerifyLoading] = useState<boolean>(false);
+  const [verifyResult, setVerifyResult] = useState<{
+    hash: string;
+    found: boolean;
+    video?: ContractVideo;
+  } | null>(null);
+  const [verifyError, setVerifyError] = useState<string>('');
 
   const addr = PUBLIC_CONFIG.contractAddress;
   const contractAddress = useMemo(() => {
@@ -391,6 +401,99 @@ export default function Page() {
     return hashHex; // bytes32 hex
   }, []);
 
+  // --- 4.5. List videos by address ---
+  const listForAddress = useCallback(async (opts?: { offset?: number; limit?: number; address?: string }) => {
+    setListError('');
+
+    const a = (opts?.address || listAddress || '').trim();
+    if (!ethers.isAddress(a)) {
+      setListError('Enter a valid wallet address.');
+      return;
+    }
+    if (!contractAddress) {
+      setListError('Missing NEXT_PUBLIC_CONTRACT_ADDRESS.');
+      return;
+    }
+
+    const uploader = ethers.getAddress(a);
+    const nextLimit = Math.max(1, Math.min(50, opts?.limit ?? listLimit));
+
+    setListLoading(true);
+    try {
+      const { provider, contract, chainId } = await getReadContract();
+
+      const code = await provider.getCode(contractAddress);
+      if (!code || code === '0x') {
+        throw new Error(`No contract deployed at ${contractAddress} on chain ${chainId}. Check network/contract address.`);
+      }
+
+      // The requested offset is the "page offset" from the user's perspective (0, 5, 10, etc.)
+      const requestedOffset = opts?.offset ?? listOffset;
+      
+      // First call to get total count (fetch with offset=0, limit=0 to just get total)
+      const totalRes = (await contract.getVideosByUploader(
+        uploader,
+        BigInt(0),
+        BigInt(0)
+      )) as unknown as { 0: unknown; 1: unknown; page?: unknown; total?: unknown };
+      
+      const totalRaw = (totalRes.total ?? totalRes[1]) as unknown;
+      const total =
+        typeof totalRaw === 'bigint'
+          ? totalRaw
+          : typeof (totalRaw as { toString?: unknown })?.toString === 'function'
+            ? BigInt(String((totalRaw as { toString: () => string }).toString()))
+            : BigInt(0);
+      
+      const totalNum = toSafeNumber(total);
+      
+      if (totalNum === 0) {
+        setListResults([]);
+        setListTotal(0);
+        setListOffset(0);
+        log(`No videos found for ${uploader.slice(0, 6)}...`);
+        return;
+      }
+
+      // Calculate how many videos to actually fetch
+      const remainingVideos = Math.max(0, totalNum - requestedOffset);
+      const videosToFetch = Math.min(nextLimit, remainingVideos);
+      
+      // Calculate actual offset from the end for newest-first display
+      // To show newest first, we need to fetch from the end
+      // Example: total=6, requestedOffset=0, limit=5
+      //   We want indices [5,4,3,2,1] reversed = videos [6,5,4,3,2]
+      //   actualOffset = 6 - 5 = 1, limit=5 -> indices [1,2,3,4,5] -> reverse to [5,4,3,2,1]
+      // Example: total=6, requestedOffset=5, limit=5
+      //   We want index [0] = video [1]
+      //   remainingVideos = 6-5 = 1, videosToFetch = min(5,1) = 1
+      //   actualOffset = 6 - 5 - 1 = 0, limit=1 -> index [0] -> reverse to [0]
+      const actualOffset = totalNum - requestedOffset - videosToFetch;
+
+      const res = (await contract.getVideosByUploader(
+        uploader,
+        BigInt(actualOffset),
+        BigInt(videosToFetch)
+      )) as unknown as { 0: unknown; 1: unknown; page?: unknown; total?: unknown };
+
+      const page = (res.page ?? res[0]) as unknown;
+      const videos = Array.isArray(page) ? page.map(normalizeVideo) : [];
+
+      // Reverse so newest appears first
+      const reversedVideos = [...videos].reverse();
+
+      setListResults(reversedVideos);
+      setListTotal(totalNum);
+      setListOffset(requestedOffset);
+      log(`Fetched ${reversedVideos.length} videos for ${uploader.slice(0, 6)}... (offset=${actualOffset}, showing ${requestedOffset+1}-${requestedOffset+reversedVideos.length} of ${totalNum})`);
+    } catch (e: unknown) {
+      setListError(getErrorMessage(e));
+      log(`List failed: ${getErrorMessage(e)}`);
+    } finally {
+      setListLoading(false);
+    }
+  }, [contractAddress, getReadContract, listAddress, listLimit, listOffset, log]);
+
   // --- 5. Blockchain Interaction (New Contract) ---
   const registerOnChain = useCallback(async (blob: Blob, originalTimestamp: bigint) => {
     if (!contractAddress) {
@@ -418,7 +521,7 @@ export default function Page() {
       setPushInProgress(true);
       const myJobId = ++pushJobIdRef.current;
 
-      setStatus('Hashing & Signing (EIP-712)...');
+      setStatus('Preparing data...');
 
       const { provider, contract, chainId, signer, signerAddress } = await getWriteContract();
 
@@ -428,21 +531,30 @@ export default function Page() {
         throw new Error(`No contract deployed at ${contractAddress} on chain ${chainId}. Check network/contract address.`);
       }
 
-      // A. Prepare Data
-      contentHash = await hashContent(blob);
-      cid = await uploadToIPFS(blob);
+      // A. Prepare Data - hash and get sequence in parallel
+      setStatus('Hashing content...');
+      const [hashResult, lastSeq] = await Promise.all([
+        hashContent(blob),
+        contract.lastSequence(signerAddress) as Promise<bigint>
+      ]);
+      
+      contentHash = hashResult;
       const merkleRoot = ethers.keccak256(contentHash);
+      const sequence = lastSeq + BigInt(1);
 
       if (!isBytes32(contentHash)) throw new Error('Computed contentHash is not bytes32.');
       if (!isBytes32(merkleRoot)) throw new Error('Computed merkleRoot is not bytes32.');
 
-      const last = (await contract.lastSequence(signerAddress)) as bigint;
-      const sequence = last + BigInt(1);
-
       log(`Hash generated: ${contentHash.slice(0, 10)}...`);
       log(`Sequence: ${sequence.toString()}`);
 
-      // B. EIP-712 Typed Data Signature
+      // B. Upload to IPFS (this is the slow part)
+      cid = await uploadToIPFS(blob);
+
+      // C. EIP-712 Typed Data Signature
+      setStatus('Awaiting signature...');
+      log('Please sign in MetaMask to register this video.');
+      
       const domain = {
         // Must match the contract's EIP-712 domain (see contract constructor).
         name: 'Veritas',
@@ -473,31 +585,42 @@ export default function Page() {
       let signature: string;
       try {
         signature = await signer.signTypedData(domain, types, value);
-        log('EIP-712 signature created off-chain.');
+        log('✓ Signature received.');
       } catch (signError: unknown) {
         // Handle signature rejection gracefully
         const errorMsg = getErrorMessage(signError);
+        const errorCode = (signError as { code?: number | string }).code;
+        
+        // Check for various rejection patterns
         const isRejection = 
           errorMsg.toLowerCase().includes('user rejected') ||
           errorMsg.toLowerCase().includes('user denied') ||
           errorMsg.toLowerCase().includes('user cancelled') ||
-          (signError as { code?: number }).code === 4001; // MetaMask rejection code
+          errorMsg.toLowerCase().includes('user disapproved') ||
+          errorMsg.toLowerCase().includes('rejected') ||
+          errorCode === 4001 || // MetaMask rejection
+          errorCode === 'ACTION_REJECTED'; // Ethers.js rejection
 
         if (isRejection) {
-          setStatus('Signature rejected');
-          log('⚠️ User rejected signature request.');
-          log(`Video was uploaded to IPFS: ${cid}`);
+          setStatus('Signature cancelled');
+          log('⚠️ Signature request was cancelled.');
+          log(`Video uploaded to IPFS: ${cid}`);
           log(`View at: https://ipfs.io/ipfs/${cid}`);
-          log('The video is NOT registered on-chain and will not appear in your history.');
+          log('💡 The video is NOT registered on-chain.');
+          log('You can retry by clicking "Retry last segment" or record again.');
           return; // Exit gracefully without throwing
         }
         
-        // Re-throw other signature errors
-        throw signError;
+        // Handle other signature errors (connection issues, etc.)
+        setStatus('Signature failed');
+        log(`❌ Signature error: ${errorMsg}`);
+        log(`Video uploaded to IPFS: ${cid}`);
+        log(`View at: https://ipfs.io/ipfs/${cid}`);
+        return; // Exit gracefully
       }
 
-      // C. Submit via Relayer or Direct
-      setStatus('Submitting to Blockchain...');
+      // D. Submit via Relayer or Direct
+      setStatus('Submitting to blockchain...');
       
       let txHash: string;
       let receipt: unknown;
@@ -524,21 +647,25 @@ export default function Page() {
         }
 
         txHash = relayerData.txHash;
-        log(`Relayer submitted tx: ${txHash}`);
-        log(`Relayer address: ${relayerData.relayer || 'unknown'}`);
+        log(`✓ Transaction submitted: ${txHash.slice(0, 10)}...`);
+        log(`Relayer: ${relayerData.relayer ? relayerData.relayer.slice(0, 6) + '...' : 'unknown'}`);
 
         // Wait for transaction confirmation using provider
         setStatus('Waiting for confirmation...');
+        log('Waiting for blockchain confirmation...');
         receipt = await provider.waitForTransaction(txHash);
       } else {
         // Direct submission: User's wallet submits transaction
-        log('Submitting directly via wallet...');
+        log('Submitting transaction...');
         const tx = await contract.registerVideoSigned({
           ...value,
           signature,
         });
         txHash = (tx as { hash?: string }).hash ?? '(hash unavailable)';
-        log(`Tx sent: ${txHash}`);
+        log(`✓ Transaction submitted: ${txHash.slice(0, 10)}...`);
+        
+        setStatus('Waiting for confirmation...');
+        log('Waiting for blockchain confirmation...');
         receipt = await tx.wait();
       }
 
@@ -599,7 +726,7 @@ export default function Page() {
         log(`Read-back getVideo uploader=${nv.uploader.slice(0, 6)}... seq=${nv.sequence.toString()} cid=${nv.cid ? 'yes' : 'no'}`);
 
         const uploaderKey = nv.uploader && ethers.isAddress(nv.uploader) ? ethers.getAddress(nv.uploader) : signerAddress;
-        const res2 = (await contract.getVideosByUploader(uploaderKey, BigInt(0), BigInt(10))) as unknown as {
+        const res2 = (await contract.getVideosByUploader(uploaderKey, BigInt(0), BigInt(5))) as unknown as {
           0: unknown;
           1: unknown;
           page?: unknown;
@@ -618,11 +745,34 @@ export default function Page() {
         log(`Read-back checks failed: ${getErrorMessage(e)}`);
       }
 
-      setStatus('Success! Video Registered.');
-      log('Transaction confirmed on-chain.');
+      setStatus('✓ Video registered successfully');
+      log('✓ Transaction confirmed on-chain.');
+      log(`View on IPFS: https://ipfs.io/ipfs/${cid}`);
 
       // Convenience: auto-fill lookup with the new content hash
       setLookupHash(contentHash);
+
+      // Refresh video list if we're currently viewing videos for this uploader or connected wallet
+      try {
+        const uploaderToCheck = signerAddress && ethers.isAddress(signerAddress) ? ethers.getAddress(signerAddress) : null;
+        const currentListAddr = listAddress && ethers.isAddress(listAddress) ? ethers.getAddress(listAddress) : null;
+        const connectedWalletAddr = walletAddress && ethers.isAddress(walletAddress) ? ethers.getAddress(walletAddress) : null;
+        
+        // Refresh if viewing the uploader's videos or if the uploader is the connected wallet
+        const shouldRefresh = uploaderToCheck && (
+          (currentListAddr && uploaderToCheck.toLowerCase() === currentListAddr.toLowerCase()) ||
+          (connectedWalletAddr && uploaderToCheck.toLowerCase() === connectedWalletAddr.toLowerCase())
+        );
+        
+        if (shouldRefresh) {
+          // Refresh the list for the uploader
+          await listForAddress({ offset: 0, limit: listLimit, address: uploaderToCheck });
+          log('Video list refreshed.');
+        }
+      } catch (refreshError) {
+        // Don't fail the whole registration if refresh fails
+        log(`List refresh failed: ${getErrorMessage(refreshError)}`);
+      }
     } catch (error: unknown) {
       console.error(error);
       const errorMsg = getErrorMessage(error);
@@ -658,6 +808,9 @@ export default function Page() {
     getProvider,
     getWriteContract,
     hashContent,
+    listAddress,
+    listForAddress,
+    listLimit,
     log,
     requiredChainId,
     uploadToIPFS,
@@ -711,7 +864,7 @@ export default function Page() {
     
     // Auto-fetch videos for the connected wallet
     if (contractAddress && ethers.isAddress(walletAddress)) {
-      void listForAddress({ offset: 0, limit: 10 });
+      void listForAddress({ offset: 0, limit: 5, address: walletAddress });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [walletAddress, contractAddress]);
@@ -745,60 +898,62 @@ export default function Page() {
     }
   };
 
-  const listForAddress = async (opts?: { offset?: number; limit?: number }) => {
-    setListError('');
+  const verifyVideoFile = async () => {
+    setVerifyError('');
+    setVerifyResult(null);
 
-    const a = (listAddress || '').trim();
-    if (!ethers.isAddress(a)) {
-      setListError('Enter a valid wallet address.');
+    if (!verifyFile) {
+      setVerifyError('Please select a video file.');
       return;
     }
     if (!contractAddress) {
-      setListError('Missing NEXT_PUBLIC_CONTRACT_ADDRESS.');
+      setVerifyError('Missing NEXT_PUBLIC_CONTRACT_ADDRESS.');
       return;
     }
 
-    const uploader = ethers.getAddress(a);
-    const nextOffset = Math.max(0, opts?.offset ?? listOffset);
-    const nextLimit = Math.max(1, Math.min(50, opts?.limit ?? listLimit));
-
-    setListLoading(true);
+    setVerifyLoading(true);
     try {
-      const { provider, contract, chainId } = await getReadContract();
+      log(`Hashing uploaded file: ${verifyFile.name} (${(verifyFile.size / 1024 / 1024).toFixed(2)} MB)`);
+      
+      // Hash the file
+      const hash = await hashContent(verifyFile);
+      log(`Computed hash: ${hash}`);
 
-      const code = await provider.getCode(contractAddress);
-      if (!code || code === '0x') {
-        throw new Error(`No contract deployed at ${contractAddress} on chain ${chainId}. Check network/contract address.`);
+      // Look it up on-chain
+      const { contract } = await getReadContract();
+      
+      try {
+        const v = await contract.getVideo(hash);
+        const normalized = normalizeVideo(v);
+
+        // Check if video exists (uploader won't be zero address if it exists)
+        const exists = normalized.uploader !== ethers.ZeroAddress;
+
+        if (exists) {
+          setVerifyResult({ hash, found: true, video: normalized });
+          log(`Video found on-chain. Uploader: ${normalized.uploader.slice(0, 6)}...`);
+        } else {
+          setVerifyResult({ hash, found: false });
+          log(`Video not found on-chain. Hash: ${hash}`);
+        }
+      } catch (contractError: unknown) {
+        // Contract throws VideoNotFound() when video doesn't exist
+        const errorMsg = getErrorMessage(contractError);
+        if (errorMsg.includes('VideoNotFound') || errorMsg.includes('revert')) {
+          setVerifyResult({ hash, found: false });
+          log(`Video not found on-chain. Hash: ${hash}`);
+        } else {
+          throw contractError; // Re-throw unexpected errors
+        }
       }
-
-      const res = (await contract.getVideosByUploader(
-        uploader,
-        BigInt(nextOffset),
-        BigInt(nextLimit)
-      )) as unknown as { 0: unknown; 1: unknown; page?: unknown; total?: unknown };
-
-      const page = (res.page ?? res[0]) as unknown;
-      const totalRaw = (res.total ?? res[1]) as unknown;
-
-      const videos = Array.isArray(page) ? page.map(normalizeVideo) : [];
-      const total =
-        typeof totalRaw === 'bigint'
-          ? totalRaw
-          : typeof (totalRaw as { toString?: unknown })?.toString === 'function'
-            ? BigInt(String((totalRaw as { toString: () => string }).toString()))
-            : BigInt(0);
-
-      setListResults(videos);
-      setListTotal(toSafeNumber(total));
-      setListOffset(nextOffset);
-      log(`Fetched ${videos.length} videos for ${uploader.slice(0, 6)}... chain=${chainId} total=${total.toString()}`);
     } catch (e: unknown) {
-      setListError(getErrorMessage(e));
-      log(`List failed: ${getErrorMessage(e)}`);
+      setVerifyError(getErrorMessage(e));
+      log(`Verification failed: ${getErrorMessage(e)}`);
     } finally {
-      setListLoading(false);
+      setVerifyLoading(false);
     }
   };
+
 
   // --- UI Render ---
   return (
@@ -874,7 +1029,7 @@ export default function Page() {
                 <select
                   value={String(segmentSeconds)}
                   onChange={(e) => setSegmentSeconds(Number(e.target.value))}
-                  className="mt-1 w-full rounded bg-neutral-900 border border-neutral-800 px-3 py-2 text-xs text-neutral-100 outline-none focus:border-emerald-600"
+                  className="mt-1 w-full rounded bg-neutral-900 border border-neutral-800 px-3 py-2 pr-8 text-xs text-neutral-100 outline-none focus:border-emerald-600 appearance-none bg-[url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20fill%3D%22none%22%20viewBox%3D%220%200%2020%2020%22%3E%3Cpath%20stroke%3D%22%23a3a3a3%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20stroke-width%3D%221.5%22%20d%3D%22M6%208l4%204%204-4%22%2F%3E%3C%2Fsvg%3E')] bg-[length:1rem] bg-[right_0.5rem_center] bg-no-repeat"
                   disabled={isRecording}
                 >
                   <option value="15">15s</option>
@@ -888,7 +1043,7 @@ export default function Page() {
                 <select
                   value={qualityPreset}
                   onChange={(e) => setQualityPreset(e.target.value as 'high' | 'medium' | 'low' | 'potato')}
-                  className="mt-1 w-full rounded bg-neutral-900 border border-neutral-800 px-3 py-2 text-xs text-neutral-100 outline-none focus:border-emerald-600"
+                  className="mt-1 w-full rounded bg-neutral-900 border border-neutral-800 px-3 py-2 pr-8 text-xs text-neutral-100 outline-none focus:border-emerald-600 appearance-none bg-[url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20fill%3D%22none%22%20viewBox%3D%220%200%2020%2020%22%3E%3Cpath%20stroke%3D%22%23a3a3a3%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20stroke-width%3D%221.5%22%20d%3D%22M6%208l4%204%204-4%22%2F%3E%3C%2Fsvg%3E')] bg-[length:1rem] bg-[right_0.5rem_center] bg-no-repeat"
                   disabled={isRecording}
                 >
                   <option value="high">high (720p, ~2.5Mbps)</option>
@@ -1064,6 +1219,94 @@ export default function Page() {
           )}
         </div>
 
+        {/* Verify Video File */}
+        <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-4 space-y-3">
+          <div className="text-xs text-neutral-500">Verify video integrity</div>
+          
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <label className="flex-1">
+                <input
+                  type="file"
+                  accept="video/*"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0] || null;
+                    setVerifyFile(file);
+                    setVerifyResult(null);
+                    setVerifyError('');
+                  }}
+                  className="block w-full text-xs text-neutral-400 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-xs file:bg-neutral-800 file:text-neutral-200 hover:file:bg-neutral-700 file:cursor-pointer cursor-pointer"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={verifyVideoFile}
+                disabled={!contractAddress || !verifyFile || verifyLoading}
+                className="rounded bg-neutral-800 px-4 py-2 text-xs hover:bg-neutral-700 transition disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+              >
+                {verifyLoading ? 'Verifying…' : 'Verify'}
+              </button>
+            </div>
+
+            {verifyFile && (
+              <div className="text-xs text-neutral-500">
+                Selected: <span className="text-neutral-300">{verifyFile.name}</span> ({(verifyFile.size / 1024 / 1024).toFixed(2)} MB)
+              </div>
+            )}
+
+            {verifyError && <div className="text-xs text-red-300">{verifyError}</div>}
+
+            {verifyResult && (
+              <div className="rounded border border-neutral-800 bg-neutral-900/40 p-3 text-xs space-y-1">
+                <div>
+                  <span className="text-neutral-500">status:</span>{' '}
+                  <span className={verifyResult.found ? 'text-emerald-400' : 'text-red-400'}>
+                    {verifyResult.found ? 'registered' : 'not registered'}
+                  </span>
+                </div>
+                <div className="break-all">
+                  <span className="text-neutral-500">contentHash:</span>{' '}
+                  <span className="text-neutral-200">{verifyResult.hash}</span>
+                </div>
+                <div>
+                  <span className="text-neutral-500">registrant:</span>{' '}
+                  <span className="text-neutral-200">{verifyResult.found && verifyResult.video ? verifyResult.video.uploader : '—'}</span>
+                </div>
+                <div>
+                  <span className="text-neutral-500">sequence:</span>{' '}
+                  <span className="text-neutral-200">{verifyResult.found && verifyResult.video ? verifyResult.video.sequence.toString() : '—'}</span>
+                </div>
+                <div>
+                  <span className="text-neutral-500">timestamp:</span>{' '}
+                  <span className="text-neutral-200">{verifyResult.found && verifyResult.video ? formatUnixSeconds(verifyResult.video.createdAt) : '—'}</span>
+                </div>
+                <div>
+                  <span className="text-neutral-500">relayer:</span>{' '}
+                  <span className="text-neutral-200">
+                    {verifyResult.found && verifyResult.video 
+                      ? `${verifyResult.video.relayer.slice(0, 6)}...${verifyResult.video.relayer.slice(-4)}` 
+                      : '—'}
+                  </span>
+                </div>
+                <div className="break-all">
+                  <span className="text-neutral-500">cid:</span>{' '}
+                  <span className="text-neutral-200">{verifyResult.found && verifyResult.video ? verifyResult.video.cid : '—'}</span>
+                  {verifyResult.found && verifyResult.video?.cid && (
+                    <a
+                      className="ml-2 text-emerald-400 hover:text-emerald-300"
+                      href={ipfsUrl(verifyResult.video.cid)}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      open
+                    </a>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
         {/* List by uploader */}
         <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-4 space-y-3">
           <div className="flex items-center justify-between">
@@ -1150,7 +1393,7 @@ export default function Page() {
                 )}
               </div>
 
-              {walletAddress && !listLoading && listTotal > 0 && (
+              {walletAddress && !listLoading && listTotal > listLimit && (
                 <div className="flex items-center justify-between pt-2">
                   <button
                     type="button"
